@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { PassThrough } from 'stream';
 import type { FastifyReply } from 'fastify';
 import { openDeliveryStream } from './delivery-stream';
@@ -68,18 +69,36 @@ describe('DeliverySelectionService', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('rejects mismatched account, profile, source version, and explicit policy before preparation', async () => {
+  it('rejects mismatched account, profile, and explicit policy before preparation', async () => {
     const descriptor = service.descriptor(1, 'opds:2', 7, 'original', 'source-version');
     for (const args of [
       [2, 'opds:2', 'original', 'source-version'],
       [1, 'opds:3', 'original', 'source-version'],
-      [1, 'opds:2', 'original', 'changed-version'],
       [1, 'opds:2', 'audioless_epub', 'source-version'],
     ] as const) {
       await expect(service.prepare(args[0], args[1], source, args[2], descriptor, args[3])).rejects.toThrow();
     }
     expect(artifacts.prepare).not.toHaveBeenCalled();
     expect(DELIVERY_TRANSFORM_VERSION).toBeTruthy();
+  });
+
+  it('serves current bytes for a descriptor pinned to a superseded file version, without sealing it', async () => {
+    // The catalog embedded 'old-version'; a metadata write bumped the file's
+    // contentVersion to 'new-version' before the download (issue #1810).
+    const descriptor = service.descriptor(1, 'opds:2', 7, null, 'old-version');
+    const result = await service.prepare(1, 'opds:2', source, null, descriptor, 'new-version', false);
+    expect(result.sha256).toBe('full-digest');
+    expect(repository.find).not.toHaveBeenCalled();
+    expect(repository.seal).not.toHaveBeenCalled();
+    expect(artifacts.prepare).toHaveBeenCalledWith(source, null, undefined);
+    expect(hashes.record).toHaveBeenCalledWith(7, 'fingerprint');
+  });
+
+  it('still rejects a descriptor from an older transform version', async () => {
+    const payload = Buffer.from(JSON.stringify([1, 'opds:2', 7, null, 'source-version', 'older-transform-version'])).toString('base64url');
+    const descriptor = `${payload}.${createHmac('sha256', 'delivery-test-signing-key').update(payload).digest('base64url')}`;
+    await expect(service.prepare(1, 'opds:2', source, null, descriptor, 'source-version', false)).rejects.toThrow();
+    expect(artifacts.prepare).not.toHaveBeenCalled();
   });
 
   it('releases a prepared stream when its client disconnected before headers', async () => {

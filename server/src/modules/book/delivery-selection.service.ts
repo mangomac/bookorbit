@@ -64,9 +64,16 @@ export class DeliverySelectionService {
       if (!Array.isArray(values) || values[0] !== userId || values[1] !== scope || values[2] !== source.id) throw new ForbiddenException();
       if (![null, 'original', 'audioless_epub'].includes(values[3]) || (explicitOverride && values[3] !== variant)) throw new ForbiddenException();
       policy = values[3] as ReadAloudDeliveryPreference;
-      if (values[5] !== DELIVERY_TRANSFORM_VERSION || (contentVersion && values[4] !== contentVersion))
-        throw new ConflictException({ code: 'DELIVERY_SELECTION_EXPIRED' });
-      selectionId = createHash('sha256').update(descriptor).digest('hex');
+      if (values[5] !== DELIVERY_TRANSFORM_VERSION) throw new ConflictException({ code: 'DELIVERY_SELECTION_EXPIRED' });
+      // A descriptor pinned to a superseded file version (the catalog predates a
+      // metadata write, which bumps the file's contentVersion) still proves the
+      // account, scope, file, and variant binding. Freshness is re-verified
+      // against the current source below, so serve the current bytes instead of
+      // failing every download from a cached catalog entry (issue #1810). The
+      // superseded descriptor is neither sealed nor matched against a sealed
+      // row: its pinned artifact belongs to the old bytes, and the next catalog
+      // fetch issues a fresh descriptor that seals the current ones.
+      if (!(contentVersion && values[4] !== contentVersion)) selectionId = createHash('sha256').update(descriptor).digest('hex');
     }
     const captured = selectionId ? await this.repository.find(selectionId, userId, scope) : undefined;
     const artifact = await this.artifacts.prepare(
